@@ -1,0 +1,90 @@
+name: Build GKI Android 12-5.10 Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/minimize-disk-space@v2
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ccache bison flex libssl-dev libncurses5-dev libncursesw5-dev \
+            lz4 liblz4-tool zstd cpio build-essential bc libelf-dev python3 python-is-python3
+
+      - name: Install Repo Tool
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Initialize Android Kernel Workspace
+        run: |
+          mkdir workspace
+          cd workspace
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          repo init -u https://android.googlesource.com/kernel/manifest -b android12-5.10 --depth=1
+          repo sync -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
+
+      - name: Replace Kernel Source & Setup KernelSU
+        run: |
+          cd workspace
+          rm -rf common
+          git clone --depth=1 https://github.com/ramabondanp/android_kernel_common-5.10 common
+          
+          # Integrate KernelSU
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          
+      - name: Configure CONFIG_HZ
+        run: |
+          cd workspace/common
+          # Modify HZ value (Default shown here is CONFIG_HZ_1000=y; adjust if aiming for 300 or 500)
+          sed -i 's/CONFIG_HZ_100=y/# CONFIG_HZ_100 is not set/' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_HZ_250=y/# CONFIG_HZ_250 is not set/' arch/arm64/configs/gki_defconfig
+          echo "CONFIG_HZ_1000=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_HZ=1000" >> arch/arm64/configs/gki_defconfig
+
+      - name: Build Kernel
+        run: |
+          cd workspace
+          LTO=thin ./build/build.sh
+
+      - name: Prepare AnyKernel3 Zip
+        run: |
+          git clone --depth=1 https://github.com/zixine/anykernel AnyKernel3
+          rm -rf AnyKernel3/.git
+          
+          # Copy compiled Image file to AnyKernel3 directory
+          cp workspace/out/android12-5.10/dist/Image AnyKernel3/
+          
+          cd AnyKernel3
+          zip -r9 ../GKI-KernelSU-Kernel.zip * -x .git\* README.md
+
+      - name: Upload Kernel Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: GKI-KernelSU-Kernel.zip
+          tag_name: kernel-${{ github.run_id }}
+          name: GKI Android 12-5.10 KernelSU Build
+          body: |
+            Automated GKI Kernel Build
+            - Kernel Source: ramabondanp/android_kernel_common-5.10
+            - Integrated KernelSU
+            - AnyKernel3 packaged
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
