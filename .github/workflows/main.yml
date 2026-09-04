@@ -1,4 +1,4 @@
-name: GKI Android 12 - 5.10 Kernel Builder
+name: GKI Android 12 - 5.10 Kernel Build
 
 on:
   workflow_dispatch:
@@ -10,27 +10,16 @@ on:
         type: string
 
       kernel_branch:
-        description: "Android Common Kernel branch"
+        description: "Kernel source branch"
         required: true
         default: "android12-5.10"
         type: string
 
       ksu_ref:
-        description: "KernelSU branch, tag, or commit"
+        description: "KernelSU branch/tag/commit"
         required: true
         default: "master"
         type: string
-
-      hz:
-        description: "Kernel timer frequency (CONFIG_HZ)"
-        required: true
-        default: "500"
-        type: choice
-        options:
-          - "250"
-          - "300"
-          - "500"
-          - "1000"
 
       build_jobs:
         description: "Parallel build jobs"
@@ -38,7 +27,7 @@ on:
         default: "2"
         type: string
 
-      create_release:
+      release:
         description: "Create GitHub Release"
         required: true
         default: true
@@ -48,30 +37,35 @@ permissions:
   contents: write
 
 env:
-  KERNEL_REPO: "https://github.com/ramabondanp/android_kernel_common-5.10.git"
-  KSU_REPO: "https://github.com/RapliVx/KernelSU.git"
-  ANYKERNEL_REPO: "https://github.com/zixine/anykernel.git"
+  KERNEL_REPO: https://github.com/ramabondanp/android_kernel_common-5.10.git
+  KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+
+  KSU_REPO: https://github.com/RapliVx/KernelSU.git
+  KSU_REF: ${{ inputs.ksu_ref }}
+
+  ANYKERNEL_REPO: https://github.com/zixine/anykernel.git
 
   ARCH: arm64
   SUBARCH: arm64
 
-  KERNEL_DIR: "${{ github.workspace }}/kernel"
-  OUT_DIR: "${{ github.workspace }}/out"
-  DIST_DIR: "${{ github.workspace }}/dist"
+  OUT_DIR: ${{ github.workspace }}/out
+  DIST_DIR: ${{ github.workspace }}/dist
 
 jobs:
   build:
-    name: Build GKI 5.10 ARM64
+    name: Build GKI 5.10 arm64
     runs-on: ubuntu-24.04
 
     steps:
-      # ------------------------------------------------------------
+
+      # ============================================================
       # 1. CLEAN RUNNER
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Free runner disk space
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           echo "=== DISK BEFORE ==="
           df -h
@@ -80,26 +74,31 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
+
           sudo apt-get clean
 
           echo "=== DISK AFTER ==="
           df -h
 
-      # ------------------------------------------------------------
-      # 2. CHECKOUT WORKFLOW REPOSITORY
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 2. CHECKOUT BUILD REPOSITORY
+      # ============================================================
+
       - name: Checkout workflow repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # ------------------------------------------------------------
+
+      # ============================================================
       # 3. INSTALL BUILD DEPENDENCIES
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Install build dependencies
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           sudo apt-get update
 
@@ -109,8 +108,11 @@ jobs:
             build-essential \
             ccache \
             clang \
+            cmake \
             cpio \
             flex \
+            gcc \
+            g++ \
             git \
             libelf-dev \
             libssl-dev \
@@ -118,9 +120,9 @@ jobs:
             llvm \
             lz4 \
             python3 \
+            python3-pip \
             rsync \
             unzip \
-            wget \
             zip \
             zstd
 
@@ -130,50 +132,77 @@ jobs:
           llvm-ar --version
           lz4 --version
 
-      # ------------------------------------------------------------
-      # 4. CLONE KERNEL SOURCE
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 4. CLONE KERNEL
+      # ============================================================
+
       - name: Clone Android Common Kernel
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
-          rm -rf "${KERNEL_DIR}"
+          rm -rf kernel
 
           git clone \
             --depth=1 \
             --single-branch \
-            --branch "${{ inputs.kernel_branch }}" \
+            --branch "${KERNEL_BRANCH}" \
             "${KERNEL_REPO}" \
-            "${KERNEL_DIR}"
+            kernel
 
-          cd "${KERNEL_DIR}"
+          cd kernel
 
-          echo "=== KERNEL SOURCE ==="
-          echo "Branch: $(git branch --show-current)"
-          echo "Commit: $(git rev-parse HEAD)"
-          echo "Version: $(make kernelversion)"
+          echo "Kernel commit:"
+          git rev-parse HEAD
+
+          echo "Kernel branch:"
+          git branch --show-current
+
+          echo "Kernel version:"
+          make kernelversion
+
+
+      # ============================================================
+      # 5. VERIFY SOURCE
+      # ============================================================
+
+      - name: Verify GKI source
+        shell: bash
+        run: |
+          set -eux
+
+          cd kernel
 
           test -f Makefile
+          test -f build.config.common
           test -f build.config.gki
           test -f build.config.gki.aarch64
           test -f arch/arm64/configs/gki_defconfig
           test -d drivers
-          test -x scripts/config
 
-      # ------------------------------------------------------------
-      # 5. INSTALL RAPLI VX KERNELSU
-      # ------------------------------------------------------------
+          echo "GKI source verification OK"
+
+          echo "=== BUILD CONFIG ==="
+          cat build.config.common
+
+          echo "=== GKI AARCH64 CONFIG ==="
+          cat build.config.gki.aarch64
+
+
+      # ============================================================
+      # 6. INSTALL KERNELSU
+      # ============================================================
+
       - name: Integrate RapliVx KernelSU
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
-          cd "${KERNEL_DIR}"
+          cd kernel
 
-          echo "=== KERNELSU ==="
-          echo "Repository: ${KSU_REPO}"
-          echo "Ref: ${{ inputs.ksu_ref }}"
+          echo "Installing RapliVx KernelSU..."
+          echo "Ref: ${KSU_REF}"
 
           curl -LSs \
             "https://raw.githubusercontent.com/RapliVx/KernelSU/master/kernel/setup.sh" \
@@ -181,33 +210,33 @@ jobs:
 
           chmod +x /tmp/ksu-setup.sh
 
-          /tmp/ksu-setup.sh "${{ inputs.ksu_ref }}"
+          /tmp/ksu-setup.sh "${KSU_REF}"
+
+          echo "=== KernelSU integration ==="
 
           test -e drivers/kernelsu
-          grep -q 'kernelsu' drivers/Makefile
+
+          grep -q "kernelsu" drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
 
-          echo "KernelSU integration OK."
+          echo "KernelSU integration OK"
 
-      # ------------------------------------------------------------
-      # 6. GENERATE GKI DEFCONFIG + APPLY HZ
-      # ------------------------------------------------------------
-      - name: Configure GKI and KernelSU
+
+      # ============================================================
+      # 7. CONFIGURE KERNEL
+      # ============================================================
+
+      - name: Configure GKI
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
-          cd "${KERNEL_DIR}"
+          cd kernel
 
           rm -rf "${OUT_DIR}"
           mkdir -p "${OUT_DIR}"
 
-          CONFIG="${OUT_DIR}/.config"
-          CONFIG_TOOL="${KERNEL_DIR}/scripts/config"
-
-          echo "========================================"
-          echo " GENERATING GKI DEFCONFIG"
-          echo "========================================"
+          echo "Generating GKI defconfig..."
 
           make \
             O="${OUT_DIR}" \
@@ -216,53 +245,27 @@ jobs:
             LLVM_IAS=1 \
             gki_defconfig
 
-          test -f "${CONFIG}"
+          echo "Enabling KernelSU..."
 
-          echo "========================================"
-          echo " APPLYING KERNELSU CONFIG"
-          echo "========================================"
+          "${GITHUB_WORKSPACE}/kernel/scripts/config" \
+            --file "${OUT_DIR}/.config" \
+            --enable CONFIG_KSU
 
-          "${CONFIG_TOOL}" --file "${CONFIG}" --enable CONFIG_KSU
+          echo "Enabling GKI syscall hook requirements..."
 
-          # KernelSU GKI syscall-hook requirements.
-          "${CONFIG_TOOL}" --file "${CONFIG}" --enable CONFIG_KPROBES
-          "${CONFIG_TOOL}" --file "${CONFIG}" --enable CONFIG_KRETPROBES
-          "${CONFIG_TOOL}" --file "${CONFIG}" --enable CONFIG_HAVE_SYSCALL_TRACEPOINTS
+          "${GITHUB_WORKSPACE}/kernel/scripts/config" \
+            --file "${OUT_DIR}/.config" \
+            --enable CONFIG_KPROBES
 
-          echo "========================================"
-          echo " APPLYING CONFIG_HZ=${{ inputs.hz }}"
-          echo "========================================"
+          "${GITHUB_WORKSPACE}/kernel/scripts/config" \
+            --file "${OUT_DIR}/.config" \
+            --enable CONFIG_KRETPROBES
 
-          # Disable every HZ choice first. Ignore missing symbols because
-          # kernel branches can differ in which HZ options they expose.
-          for hz_symbol in \
-            CONFIG_HZ_100 \
-            CONFIG_HZ_250 \
-            CONFIG_HZ_300 \
-            CONFIG_HZ_500 \
-            CONFIG_HZ_1000; do
-            "${CONFIG_TOOL}" --file "${CONFIG}" --disable "${hz_symbol}" || true
-          done
+          "${GITHUB_WORKSPACE}/kernel/scripts/config" \
+            --file "${OUT_DIR}/.config" \
+            --enable CONFIG_HAVE_SYSCALL_TRACEPOINTS
 
-          case "${{ inputs.hz }}" in
-            250|300|500|1000)
-              "${CONFIG_TOOL}" \
-                --file "${CONFIG}" \
-                --enable "CONFIG_HZ_${{ inputs.hz }}"
-
-              "${CONFIG_TOOL}" \
-                --file "${CONFIG}" \
-                --set-val CONFIG_HZ "${{ inputs.hz }}"
-              ;;
-            *)
-              echo "ERROR: Unsupported CONFIG_HZ=${{ inputs.hz }}"
-              exit 1
-              ;;
-          esac
-
-          echo "========================================"
-          echo " RESOLVING FINAL CONFIG"
-          echo "========================================"
+          echo "Regenerating configuration..."
 
           make \
             O="${OUT_DIR}" \
@@ -271,41 +274,28 @@ jobs:
             LLVM_IAS=1 \
             olddefconfig
 
-          echo "========================================"
-          echo " FINAL CONFIG CHECK"
-          echo "========================================"
+          echo "=== IMPORTANT CONFIG ==="
 
           grep -E \
-            '^(CONFIG_HZ=|CONFIG_HZ_[0-9]+=|CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_KRETPROBES=|CONFIG_HAVE_SYSCALL_TRACEPOINTS=)' \
-            "${CONFIG}" || true
+            '^(CONFIG_KSU|CONFIG_KSU_|CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_HAVE_SYSCALL_TRACEPOINTS|CONFIG_LTO_CLANG|CONFIG_CFI_CLANG)=' \
+            "${OUT_DIR}/.config" || true
 
-          ACTUAL_HZ="$(sed -n 's/^CONFIG_HZ=//p' "${CONFIG}")"
+          echo "=== CONFIGURATION COMPLETE ==="
 
-          if [ "${ACTUAL_HZ}" != "${{ inputs.hz }}" ]; then
-            echo "ERROR: Requested CONFIG_HZ=${{ inputs.hz }}, but final CONFIG_HZ=${ACTUAL_HZ}"
-            exit 1
-          fi
 
-          if ! grep -q '^CONFIG_KSU=y$' "${CONFIG}"; then
-            echo "ERROR: CONFIG_KSU is not enabled."
-            exit 1
-          fi
+      # ============================================================
+      # 8. BUILD KERNEL
+      # ============================================================
 
-          echo "Configuration OK."
-
-      # ------------------------------------------------------------
-      # 7. BUILD KERNEL
-      # ------------------------------------------------------------
-      - name: Build GKI kernel
+      - name: Build kernel
         shell: bash
         env:
           KBUILD_BUILD_USER: "GitHub-Actions"
           KBUILD_BUILD_HOST: "github-runner"
-          KBUILD_BUILD_TIMESTAMP: "Fri Sep 04 00:00:00 UTC 2026"
         run: |
-          set -euxo pipefail
+          set -eux
 
-          cd "${KERNEL_DIR}"
+          cd kernel
 
           mkdir -p "${DIST_DIR}"
 
@@ -313,20 +303,26 @@ jobs:
           echo " STARTING GKI 5.10 ARM64 BUILD"
           echo "========================================"
 
-          echo "Kernel version: $(make kernelversion)"
-          echo "CONFIG_HZ: ${{ inputs.hz }}"
-          echo "Jobs: ${{ inputs.build_jobs }}"
+          echo "Kernel:"
+          make kernelversion
+
+          echo "Compiler:"
+          clang --version
+
+          echo "CPU:"
+          nproc
+
+          echo "Requested jobs:"
+          echo "${{ inputs.build_jobs }}"
+
           echo "Disk:"
           df -h
 
-          # Thin LTO reduces memory requirements and is the recommended
-          # build mode for constrained GitHub runners.
           make \
             O="${OUT_DIR}" \
             ARCH="${ARCH}" \
             LLVM=1 \
             LLVM_IAS=1 \
-            LTO=thin \
             -j"${{ inputs.build_jobs }}" \
             Image \
             Image.lz4 \
@@ -336,108 +332,111 @@ jobs:
           echo " BUILD FINISHED"
           echo "========================================"
 
-      # ------------------------------------------------------------
-      # 8. VERIFY BUILD OUTPUT
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 9. VERIFY BUILD OUTPUT
+      # ============================================================
+
       - name: Verify kernel output
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           IMAGE="${OUT_DIR}/arch/arm64/boot/Image"
           IMAGE_LZ4="${OUT_DIR}/arch/arm64/boot/Image.lz4"
-          CONFIG="${OUT_DIR}/.config"
 
-          test -s "${IMAGE}"
-          test -s "${IMAGE_LZ4}"
-          test -s "${CONFIG}"
+          test -f "${IMAGE}"
+          test -f "${IMAGE_LZ4}"
 
-          echo "=== OUTPUT ==="
+          echo "Image:"
           ls -lh "${IMAGE}"
+
+          echo "Image.lz4:"
           ls -lh "${IMAGE_LZ4}"
-          ls -lh "${CONFIG}"
 
-          echo "=== KERNEL VERSION ==="
-          strings "${IMAGE}" | grep -m1 'Linux version' || true
+          echo "Kernel version:"
+          strings "${IMAGE}" | grep -m1 "Linux version"
 
-          echo "=== CONFIG_HZ ==="
-          grep '^CONFIG_HZ=' "${CONFIG}"
+          echo "KernelSU:"
+          grep '^CONFIG_KSU=' "${OUT_DIR}/.config"
 
-          echo "=== KSU ==="
-          grep '^CONFIG_KSU=' "${CONFIG}"
+          echo "=== MODULES ==="
+          find "${OUT_DIR}" -type f -name "*.ko" | head -50 || true
 
-          echo "=== MODULE COUNT ==="
-          find "${OUT_DIR}" -type f -name '*.ko' | wc -l
 
-      # ------------------------------------------------------------
-      # 9. CLONE ANYKERNEL
-      # ------------------------------------------------------------
+      # ============================================================
+      # 10. PREPARE ANYKERNEL3
+      # ============================================================
+
       - name: Clone AnyKernel
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
-          rm -rf "${GITHUB_WORKSPACE}/anykernel"
+          rm -rf anykernel
 
           git clone \
             --depth=1 \
             "${ANYKERNEL_REPO}" \
-            "${GITHUB_WORKSPACE}/anykernel"
+            anykernel
 
-          cd "${GITHUB_WORKSPACE}/anykernel"
+          cd anykernel
 
-          echo "AnyKernel commit: $(git rev-parse HEAD)"
+          echo "AnyKernel commit:"
+          git rev-parse HEAD
 
-          test -f anykernel.sh
-          test -d tools
 
-      # ------------------------------------------------------------
-      # 10. PACKAGE ANYKERNEL ZIP
-      # ------------------------------------------------------------
       - name: Package AnyKernel ZIP
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
-          AK_DIR="${GITHUB_WORKSPACE}/anykernel"
-          IMAGE="${OUT_DIR}/arch/arm64/boot/Image"
+          cd anykernel
 
-          VERSION="$(cd "${KERNEL_DIR}" && make kernelversion)"
-          DATE="$(date -u +%Y%m%d)"
-          ZIP_NAME="${{ inputs.kernel_name }}-GKI-5.10-HZ${{ inputs.hz }}-${DATE}.zip"
+          # AnyKernel configuration in the supplied repository
+          # expects an uncompressed Image.
+          cp "${OUT_DIR}/arch/arm64/boot/Image" ./Image
 
-          echo "KERNEL_VERSION=${VERSION}" >> "${GITHUB_ENV}"
-          echo "ZIP_NAME=${ZIP_NAME}" >> "${GITHUB_ENV}"
+          # Include kernel metadata for debugging/reproducibility.
+          cp "${OUT_DIR}/.config" ./kernel.config
 
-          rm -f "${AK_DIR}/Image"
-          cp "${IMAGE}" "${AK_DIR}/Image"
+          if [ -f "${OUT_DIR}/System.map" ]; then
+            cp "${OUT_DIR}/System.map" ./System.map
+          fi
 
-          # Keep the exact final kernel config inside the package for
-          # troubleshooting/reproducibility.
-          cp "${OUT_DIR}/.config" "${AK_DIR}/kernel.config"
-
-          cd "${AK_DIR}"
-
+          # Remove repository git data if present.
           rm -rf .git
+
+          DATE="$(date -u +%Y%m%d)"
+          VERSION="$(cd "${GITHUB_WORKSPACE}/kernel" && make kernelversion)"
+          ZIP_NAME="${{ inputs.kernel_name }}-GKI-5.10-${DATE}.zip"
+
+          echo "ZIP_NAME=${ZIP_NAME}" >> "${GITHUB_ENV}"
+          echo "KERNEL_VERSION=${VERSION}" >> "${GITHUB_ENV}"
 
           zip -r -9 \
             "${DIST_DIR}/${ZIP_NAME}" \
             . \
-            -x '*.git*' \
-            -x 'README.md'
+            -x "*.git*" \
+            -x "README.md"
 
-          test -s "${DIST_DIR}/${ZIP_NAME}"
+          test -f "${DIST_DIR}/${ZIP_NAME}"
 
-          echo "=== ANYKERNEL PACKAGE ==="
+          echo "========================================"
+          echo " ANYKERNEL PACKAGE CREATED"
+          echo "========================================"
+
           ls -lh "${DIST_DIR}/${ZIP_NAME}"
 
-      # ------------------------------------------------------------
-      # 11. COPY RAW IMAGES
-      # ------------------------------------------------------------
-      - name: Prepare raw kernel artifacts
+
+      # ============================================================
+      # 11. COPY RAW KERNEL ARTIFACTS
+      # ============================================================
+
+      - name: Prepare release artifacts
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
           cp \
             "${OUT_DIR}/arch/arm64/boot/Image" \
@@ -457,120 +456,98 @@ jobs:
               "${DIST_DIR}/${{ inputs.kernel_name }}-System.map"
           fi
 
-      # ------------------------------------------------------------
-      # 12. BUILD INFO
-      # ------------------------------------------------------------
+          echo "=== RELEASE FILES ==="
+          ls -lah "${DIST_DIR}"
+
+
+      # ============================================================
+      # 12. CREATE BUILD INFO
+      # ============================================================
+
       - name: Generate build information
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eux
 
-          cd "${KERNEL_DIR}"
+          cd kernel
 
           {
-            echo "========================================"
-            echo " GKI KERNEL BUILD INFORMATION"
-            echo "========================================"
             echo "Kernel Name: ${{ inputs.kernel_name }}"
             echo "Kernel Version: $(make kernelversion)"
-            echo "Kernel Branch: ${{ inputs.kernel_branch }}"
+            echo "Kernel Branch: ${KERNEL_BRANCH}"
             echo "Kernel Commit: $(git rev-parse HEAD)"
-            echo "Architecture: ${ARCH}"
-            echo "CONFIG_HZ: ${{ inputs.hz }}"
             echo "KernelSU Repository: ${KSU_REPO}"
-            echo "KernelSU Ref: ${{ inputs.ksu_ref }}"
+            echo "KernelSU Ref: ${KSU_REF}"
             echo "AnyKernel Repository: ${ANYKERNEL_REPO}"
-            echo "Build Run: #${{ github.run_number }}"
-            echo "Build Date UTC: $(date -u)"
+            echo "Architecture: ${ARCH}"
+            echo "Compiler:"
+            clang --version
             echo
             echo "CONFIG_KSU:"
             grep '^CONFIG_KSU=' "${OUT_DIR}/.config" || true
+            echo "CONFIG_KPROBES:"
+            grep '^CONFIG_KPROBES=' "${OUT_DIR}/.config" || true
+            echo "CONFIG_KRETPROBES:"
+            grep '^CONFIG_KRETPROBES=' "${OUT_DIR}/.config" || true
             echo
-            echo "CONFIG_HZ:"
-            grep '^CONFIG_HZ=' "${OUT_DIR}/.config" || true
-            echo
-            echo "Kernel compiler:"
-            clang --version
+            echo "Build date UTC: $(date -u)"
           } > "${DIST_DIR}/BUILD_INFO.txt"
 
           cat "${DIST_DIR}/BUILD_INFO.txt"
 
-      # ------------------------------------------------------------
-      # 13. UPLOAD CI ARTIFACT
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 13. UPLOAD CI ARTIFACTS
+      # ============================================================
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: "${{ inputs.kernel_name }}-GKI-5.10-HZ${{ inputs.hz }}-${{ github.run_number }}"
+          name: ${{ inputs.kernel_name }}-GKI-5.10
           path: dist/*
           if-no-files-found: error
           retention-days: 7
 
-      # ------------------------------------------------------------
-      # 14. CREATE GITHUB RELEASE
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 14. GITHUB RELEASE
+      # ============================================================
+
       - name: Create GitHub Release
-        if: ${{ inputs.create_release }}
+        if: ${{ inputs.release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "${{ inputs.kernel_name }}-GKI-5.10-HZ${{ inputs.hz }}-${{ github.run_number }}"
-          name: "${{ inputs.kernel_name }} GKI 5.10 HZ${{ inputs.hz }} #${{ github.run_number }}"
+          tag_name: "${{ inputs.kernel_name }}-GKI-5.10-${{ github.run_number }}"
+          name: "${{ inputs.kernel_name }} GKI 5.10 Build #${{ github.run_number }}"
           body: |
-            # ${{ inputs.kernel_name }} — Android 12 GKI 5.10
+            # ${{ inputs.kernel_name }} GKI Android 12 - 5.10
 
-            ## Build
+            ## Build Information
 
+            - Kernel: Android Common Kernel 5.10
             - Architecture: ARM64
+            - KernelSU: RapliVx/KernelSU
+            - AnyKernel: zixine/anykernel
             - Source branch: `${{ inputs.kernel_branch }}`
-            - Kernel commit: `${{ github.sha }}`
-            - CONFIG_HZ: `${{ inputs.hz }}`
             - KernelSU ref: `${{ inputs.ksu_ref }}`
             - GitHub Actions run: #${{ github.run_number }}
 
-            ## Assets
+            ## Included
 
             - AnyKernel flashable ZIP
             - Raw `Image`
             - `Image.lz4`
-            - Final kernel config
+            - Kernel defconfig
             - `System.map` when available
-            - `BUILD_INFO.txt`
+            - Build information
 
-            ## Source
+            ## Important
 
-            Android Common Kernel:
-            https://github.com/ramabondanp/android_kernel_common-5.10
+            This is a GKI kernel build. Device compatibility depends on the
+            device's kernel/KMI, boot image layout, vendor implementation,
+            security patch level, and required vendor modules.
 
-            KernelSU:
-            https://github.com/RapliVx/KernelSU
-
-            AnyKernel:
-            https://github.com/zixine/anykernel
-
-            ## Compatibility
-
-            This is a GKI 5.10 ARM64 build. Device compatibility is not
-            guaranteed solely by the Android version. The device must match
-            the kernel/KMI and boot/vendor requirements.
-
-      # ------------------------------------------------------------
-      # 15. FINAL SUMMARY
-      # ------------------------------------------------------------
-      - name: Final summary
-        if: always()
-        shell: bash
-        run: |
-          echo "========================================"
-          echo " WORKFLOW SUMMARY"
-          echo "========================================"
-          echo "Kernel: ${{ inputs.kernel_name }}"
-          echo "Branch: ${{ inputs.kernel_branch }}"
-          echo "CONFIG_HZ: ${{ inputs.hz }}"
-          echo "KernelSU ref: ${{ inputs.ksu_ref }}"
-          echo "Run: #${{ github.run_number }}"
-          echo
-          echo "Artifacts:"
-          ls -lah "${DIST_DIR}" 2>/dev/null || true
-          echo
-          echo "Disk:"
-          df -h
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
